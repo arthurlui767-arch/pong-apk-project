@@ -16,7 +16,7 @@ android.ndk_api = 24
 android.archs = arm64-v8a, armeabi-v7a
 android.accept_sdk_license = True
 
-p4a.branch = v2024.01.21
+p4a.branch = v2023.09.16
 p4a.bootstrap = sdl2
 
 [buildozer]
