@@ -10,7 +10,7 @@ requirements = python3, pygame
 orientation = landscape
 fullscreen = 1
 
-android.api = 35
+android.api = 34
 android.minapi = 24
 android.ndk_api = 24
 android.archs = arm64-v8a, armeabi-v7a
