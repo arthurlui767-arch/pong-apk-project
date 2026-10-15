@@ -48,11 +48,33 @@ PALE = (235, 232, 211)
 
 def create_display() -> pygame.Surface:
     if sys.platform == "android":
-        return pygame.display.set_mode(
-            (WIDTH, HEIGHT),
-            pygame.FULLSCREEN | pygame.SCALED,
-        )
+        global WIDTH
+        display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        display_width, display_height = display.get_size()
+        if display_height > 0:
+            WIDTH = max(HEIGHT, round(display_width * HEIGHT / display_height))
+        return pygame.Surface((WIDTH, HEIGHT))
     return pygame.display.set_mode((WIDTH, HEIGHT))
+
+
+def present_display(canvas: pygame.Surface) -> None:
+    display = pygame.display.get_surface()
+    if display is None:
+        raise RuntimeError("A tela do Pong não foi inicializada.")
+    if canvas is not display:
+        pygame.transform.scale(canvas, display.get_size(), display)
+    pygame.display.flip()
+
+
+def screen_to_game_pos(position: tuple[int, int]) -> tuple[int, int]:
+    display = pygame.display.get_surface()
+    if display is None:
+        raise RuntimeError("A tela do Pong não foi inicializada.")
+    display_width, display_height = display.get_size()
+    return (
+        round(position[0] * WIDTH / display_width),
+        round(position[1] * HEIGHT / display_height),
+    )
 
 
 class Paddle:
@@ -222,6 +244,8 @@ class PongGame:
         self.left_paddle.speed = self.bot_settings["speed"] if mode == "bot_vs_bot" else PLAYER_SPEED
         self.balls = [Ball(ball_speed)]
         self.ball = self.balls[0]
+        self.touch_control_fingers: dict[int, tuple[str, int]] = {}
+        self.touch_drag_fingers: set[int] = set()
 
     @staticmethod
     def create_arena_background() -> pygame.Surface:
@@ -346,20 +370,125 @@ class PongGame:
                 self.right_paddle.move(1)
 
     def handle_touch(self, event: pygame.event.Event) -> None:
+        finger_id = event.finger_id
+        if event.type == pygame.FINGERUP:
+            self.touch_control_fingers.pop(finger_id, None)
+            self.touch_drag_fingers.discard(finger_id)
+            return
+
         if event.type not in (pygame.FINGERDOWN, pygame.FINGERMOTION):
             return
+
         touch_x = round(event.x * WIDTH)
         touch_y = round(event.y * HEIGHT)
+        control = self._touch_control_at(touch_x, touch_y)
+
+        if finger_id in self.touch_control_fingers:
+            if control is None:
+                self.touch_control_fingers.pop(finger_id)
+            else:
+                self.touch_control_fingers[finger_id] = control
+            return
+
+        if finger_id in self.touch_drag_fingers:
+            if control is not None:
+                self.touch_drag_fingers.discard(finger_id)
+                self.touch_control_fingers[finger_id] = control
+            else:
+                self._move_touch_paddle(touch_x, touch_y)
+            return
+
+        if event.type == pygame.FINGERDOWN:
+            if control is not None:
+                self.touch_control_fingers[finger_id] = control
+            elif self.mode in ("bot", "players"):
+                self.touch_drag_fingers.add(finger_id)
+                self._move_touch_paddle(touch_x, touch_y)
+
+    def _touch_control_rects(self) -> dict[tuple[str, int], pygame.Rect]:
+        button_width = 80
+        button_height = 52
+        left_x = 24
+        right_x = WIDTH - left_x - button_width
+        top_y = HEIGHT - 122
+        bottom_y = top_y + button_height + 8
+        rects = {
+            ("left", -1): pygame.Rect(left_x, top_y, button_width, button_height),
+            ("left", 1): pygame.Rect(left_x, bottom_y, button_width, button_height),
+        }
+        if self.mode == "players":
+            rects[("right", -1)] = pygame.Rect(right_x, top_y, button_width, button_height)
+            rects[("right", 1)] = pygame.Rect(right_x, bottom_y, button_width, button_height)
+        return rects
+
+    def _touch_control_at(self, x: int, y: int) -> tuple[str, int] | None:
+        for control, rect in self._touch_control_rects().items():
+            if rect.collidepoint(x, y):
+                return control
+        return None
+
+    def _move_touch_paddle(self, x: int, y: int) -> None:
         if self.mode == "bot":
-            if touch_x >= WIDTH // 2:
+            if x >= WIDTH // 2:
                 return
             paddle = self.left_paddle
         elif self.mode == "players":
-            paddle = self.left_paddle if touch_x < WIDTH // 2 else self.right_paddle
+            paddle = self.left_paddle if x < WIDTH // 2 else self.right_paddle
         else:
             return
-        paddle.rect.centery = touch_y
+        paddle.rect.centery = y
         paddle.rect.clamp_ip(pygame.Rect(0, 0, WIDTH, HEIGHT))
+
+    def update_touch_controls(self) -> None:
+        directions = {"left": 0, "right": 0}
+        for side, direction in self.touch_control_fingers.values():
+            directions[side] += direction
+
+        for side, direction in directions.items():
+            if direction:
+                paddle = self.left_paddle if side == "left" else self.right_paddle
+                paddle.move(1 if direction > 0 else -1)
+
+    def draw_touch_controls(self) -> None:
+        if sys.platform != "android" or self.mode not in ("bot", "players"):
+            return
+
+        active_controls = set(self.touch_control_fingers.values())
+        for (side, direction), rect in self._touch_control_rects().items():
+            color = ACCENT if (side, direction) in active_controls else (91, 112, 137)
+            button = pygame.Surface(rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(
+                button,
+                (*color, 150),
+                button.get_rect(),
+                border_radius=12,
+            )
+            pygame.draw.rect(
+                button,
+                (*color, 230),
+                button.get_rect(),
+                width=2,
+                border_radius=12,
+            )
+            center_x, center_y = rect.width // 2, rect.height // 2
+            arrow = (
+                (center_x, center_y - 12),
+                (center_x - 15, center_y + 8),
+                (center_x + 15, center_y + 8),
+            )
+            if direction > 0:
+                arrow = tuple((x, 2 * center_y - y) for x, y in arrow)
+            pygame.draw.polygon(button, WHITE, arrow)
+            self.screen.blit(button, rect)
+
+        left_label = self.record_font.render("J1", True, WHITE)
+        self.screen.blit(left_label, left_label.get_rect(center=(64, HEIGHT - 140)))
+        if self.mode == "players":
+            right_label = self.record_font.render("J2", True, WHITE)
+            self.screen.blit(
+                right_label,
+                right_label.get_rect(center=(WIDTH - 64, HEIGHT - 140)),
+            )
 
     def toggle_admin_slow(self) -> None:
         multiplier = 1.0 if self.ball.speed_multiplier == 0.55 else 0.55
@@ -511,16 +640,24 @@ class PongGame:
             self.screen.blit(powers, powers.get_rect(center=(WIDTH // 2, HEIGHT - 55)))
         if sys.platform == "android" and self.mode in ("bot", "players"):
             touch_hint = self.record_font.render(
-                "TOQUE E ARRASTE EM CADA LADO PARA MOVER",
+                "USE OS BOTOES OU TOQUE E ARRASTE PARA MOVER",
                 True,
                 MUTED,
             )
             self.screen.blit(
                 touch_hint,
-                touch_hint.get_rect(center=(WIDTH // 2, HEIGHT - 82)),
+                touch_hint.get_rect(center=(WIDTH // 2, HEIGHT - 142)),
             )
 
-        pygame.display.flip()
+        if sys.platform == "android":
+            menu_button = pygame.Rect(18, 18, 100, 44)
+            pygame.draw.rect(self.screen, (24, 35, 49), menu_button, border_radius=10)
+            pygame.draw.rect(self.screen, MUTED, menu_button, 2, border_radius=10)
+            menu_label = self.record_font.render("MENU", True, WHITE)
+            self.screen.blit(menu_label, menu_label.get_rect(center=menu_button.center))
+
+        self.draw_touch_controls()
+        present_display(self.screen)
 
     def run(self) -> None:
         running = True
@@ -530,8 +667,24 @@ class PongGame:
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
-                elif event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION):
+                elif event.type == pygame.FINGERDOWN and sys.platform == "android":
+                    touch_x = round(event.x * WIDTH)
+                    touch_y = round(event.y * HEIGHT)
+                    if pygame.Rect(18, 18, 100, 44).collidepoint(touch_x, touch_y):
+                        running = False
+                    else:
+                        self.handle_touch(event)
+                elif event.type in (pygame.FINGERMOTION, pygame.FINGERUP):
                     self.handle_touch(event)
+                elif (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                    and sys.platform == "android"
+                    and pygame.Rect(18, 18, 100, 44).collidepoint(
+                        *screen_to_game_pos(event.pos)
+                    )
+                ):
+                    running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.type == pygame.KEYDOWN and self.admin_mode:
@@ -546,6 +699,7 @@ class PongGame:
                         self.ball_trail.clear()
 
             keys = pygame.key.get_pressed()
+            self.update_touch_controls()
 
             if self.mode == "bot":
                 if keys[pygame.K_w]:
@@ -672,6 +826,7 @@ class Menu:
             ("BOT VS BOT", "Assista a uma partida entre computadores", "03", CORAL),
             ("MODO CAÓS", "Cada ponto cria mais bolas em campo", "04", GOLD),
             ("SAIR", "Fechar o jogo", "05", MUTED),
+            ("MODO ADM", "Abrir o painel de administrador", "ADM", GOLD),
         ]
 
     def available_difficulties(self) -> list[str]:
@@ -697,7 +852,13 @@ class Menu:
                 )
                 for index in range(4)
             ]
-            rects.append(pygame.Rect(WIDTH // 2 - 130, 444, 260, 58))
+            button_width = 250
+            button_gap = 18
+            first_button_x = (WIDTH - button_width * 2 - button_gap) // 2
+            rects.extend(
+                pygame.Rect(first_button_x + index * (button_width + button_gap), 444, button_width, 58)
+                for index in range(2)
+            )
             return rects
         if self.page == "admin":
             card_width = 390
@@ -793,6 +954,11 @@ class Menu:
         if candidates:
             self.selected = min(candidates)[2]
 
+    def run_game(self, game: PongGame) -> None:
+        game.run()
+        self.page = "main"
+        self.selected = 0
+
     def choose(self, index: int) -> None:
         self.selected = index
         if self.page == "difficulty":
@@ -803,49 +969,49 @@ class Menu:
                 return
             difficulty = difficulties[index]
             if self.pending_admin_mode:
-                PongGame(
+                self.run_game(PongGame(
                     self.pending_mode,
                     difficulty,
                     admin_mode=True,
                     ball_speed=self.admin_ball_speeds[self.admin_ball_speed_index],
                     paddle_height=self.admin_paddle_heights[self.admin_paddle_height_index],
                     multiball_mode=self.admin_multiball,
-                ).run()
+                ))
             else:
-                PongGame(self.pending_mode, difficulty).run()
+                self.run_game(PongGame(self.pending_mode, difficulty))
             return
         if self.page == "admin":
             if index == 0:
-                PongGame(
+                self.run_game(PongGame(
                     "bot",
                     self.admin_difficulty,
                     admin_mode=True,
                     ball_speed=self.admin_ball_speeds[self.admin_ball_speed_index],
                     paddle_height=self.admin_paddle_heights[self.admin_paddle_height_index],
                     multiball_mode=self.admin_multiball,
-                ).run()
+                ))
             elif index == 1:
-                PongGame(
+                self.run_game(PongGame(
                     "players",
                     admin_mode=True,
                     ball_speed=self.admin_ball_speeds[self.admin_ball_speed_index],
                     paddle_height=self.admin_paddle_heights[self.admin_paddle_height_index],
                     multiball_mode=self.admin_multiball,
-                ).run()
+                ))
             elif index == 2:
                 self.pending_mode = "bot_vs_bot"
                 self.pending_admin_mode = True
                 self.page = "difficulty"
                 self.selected = 1
             elif index == 3:
-                PongGame(
+                self.run_game(PongGame(
                     "bot",
                     self.admin_difficulty,
                     admin_mode=True,
                     ball_speed=self.admin_ball_speeds[self.admin_ball_speed_index],
                     paddle_height=self.admin_paddle_heights[self.admin_paddle_height_index],
                     multiball_mode=True,
-                ).run()
+                ))
             elif index == 4:
                 self.page = "admin_settings"
                 self.selected = 0
@@ -865,14 +1031,14 @@ class Menu:
                     self.selected = 1
                 else:
                     self.pending_admin_mode = False
-                    PongGame(
+                    self.run_game(PongGame(
                         self.pending_mode,
                         self.admin_difficulty,
                         admin_mode=True,
                         ball_speed=self.admin_ball_speeds[self.admin_ball_speed_index],
                         paddle_height=self.admin_paddle_heights[self.admin_paddle_height_index],
                         multiball_mode=self.admin_multiball,
-                    ).run()
+                    ))
             else:
                 self.page = "admin"
                 self.selected = 1
@@ -887,15 +1053,18 @@ class Menu:
             return
 
         if self.page == "main":
-            if index == 0 or index == 2:
+            if index == 5:
+                self.page = "admin"
+                self.selected = 0
+            elif index == 0 or index == 2:
                 self.pending_mode = "bot" if index == 0 else "bot_vs_bot"
                 self.pending_admin_mode = False
                 self.page = "difficulty"
                 self.selected = 1
             elif index == 1:
-                PongGame("players").run()
+                self.run_game(PongGame("players"))
             elif index == 3:
-                PongGame("bot", multiball_mode=True).run()
+                self.run_game(PongGame("bot", multiball_mode=True))
             else:
                 pygame.quit()
                 sys.exit()
@@ -960,7 +1129,7 @@ class Menu:
         for index, ((title_text, description, number, accent), rect) in enumerate(
             zip(options, self.option_rects())
         ):
-            hovered = rect.collidepoint(pygame.mouse.get_pos())
+            hovered = rect.collidepoint(screen_to_game_pos(pygame.mouse.get_pos()))
             active = index == self.selected or hovered
             if hovered:
                 self.selected = index
@@ -1101,8 +1270,9 @@ class Menu:
                             sys.exit()
 
                 if event.type == pygame.MOUSEMOTION:
+                    position = screen_to_game_pos(event.pos)
                     for index, rect in enumerate(self.option_rects()):
-                        if rect.collidepoint(event.pos):
+                        if rect.collidepoint(position):
                             self.selected = index
                             break
                 elif event.type == pygame.FINGERDOWN:
@@ -1115,13 +1285,14 @@ class Menu:
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if pygame.time.get_ticks() - self.last_touch_time < 400:
                         continue
+                    position = screen_to_game_pos(event.pos)
                     for index, rect in enumerate(self.option_rects()):
-                        if rect.collidepoint(event.pos):
+                        if rect.collidepoint(position):
                             self.choose(index)
                             break
 
             self.draw()
-            pygame.display.flip()
+            present_display(self.screen)
             self.clock.tick(FPS)
 
 
