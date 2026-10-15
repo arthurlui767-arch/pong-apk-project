@@ -1,0 +1,51 @@
+name: Build Pong Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'PongAndroid/**'
+      - '.github/workflows/build-android.yml'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git zip unzip openjdk-17-jdk \
+            build-essential zlib1g-dev libbz2-dev \
+            libffi-dev libssl-dev libncurses5-dev \
+            libsqlite3-dev liblzma-dev uuid-dev libgmp-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            cmake ninja-build
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel cython
+          python -m pip install --upgrade buildozer
+
+      - name: Build APK with Buildozer
+        working-directory: PongAndroid
+        run: buildozer -v android debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-android-apk
+          path: PongAndroid/bin/*.apk
+          if-no-files-found: error
