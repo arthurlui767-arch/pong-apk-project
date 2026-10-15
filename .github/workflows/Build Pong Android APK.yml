@@ -27,7 +27,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            autoconf automake libtool libtool-bin pkg-config m4 \
+            autoconf automake libtool libtool-bin libltdl-dev pkg-config m4 \
             git zip unzip openjdk-17-jdk \
             build-essential zlib1g-dev libbz2-dev \
             libffi-dev libssl-dev libncurses5-dev \
